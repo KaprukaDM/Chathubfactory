@@ -1,10 +1,20 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import requests
 from datetime import datetime
 import os
 from config import supabase, WEBHOOK_VERIFY_TOKEN, get_page_config
 
 app = Flask(__name__)
+
+# Enable CORS for GitHub Pages
+CORS(app, resources={
+    r"/api/*": {
+        "origins": ["https://kaprukadm.github.io", "http://localhost:*"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+})
 
 # Root endpoint
 @app.route('/')
@@ -69,6 +79,9 @@ def handle_message(event, page_id):
             message_text = event['message']['text']
             message_id = event['message']['mid']
 
+            # Get sender name from Facebook API
+            sender_name = get_sender_name(sender_id, page_config['accessToken'])
+
             # Create conversation ID
             conversation_id = f"fb_{page_id}_{sender_id}"
 
@@ -83,13 +96,15 @@ def handle_message(event, page_id):
                     'page_id': page_id,
                     'page_name': page_config['name'],
                     'customer_psid': sender_id,
+                    'customer_name': sender_name,
                     'last_message_time': datetime.now().isoformat(),
                     'status': 'active'
                 }).execute()
             else:
-                # Update last message time
+                # Update last message time and name
                 supabase.table('conversations').update({
-                    'last_message_time': datetime.now().isoformat()
+                    'last_message_time': datetime.now().isoformat(),
+                    'customer_name': sender_name
                 }).eq('conversation_id', conversation_id).execute()
 
             # Store message
@@ -109,10 +124,29 @@ def handle_message(event, page_id):
     except Exception as e:
         print(f'Error handling message: {str(e)}')
 
+def get_sender_name(sender_id, access_token):
+    """Fetch sender name from Facebook Graph API"""
+    try:
+        url = f'https://graph.facebook.com/v18.0/{sender_id}'
+        params = {
+            'fields': 'name',
+            'access_token': access_token
+        }
+        response = requests.get(url, params=params)
+        data = response.json()
+        return data.get('name', 'Unknown')
+    except:
+        return 'Unknown'
+
 # Send message API
-@app.route('/api/send', methods=['POST'])
+@app.route('/api/send', methods=['POST', 'OPTIONS'])
 def send_message():
     """Send reply back to Facebook Messenger"""
+
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        return '', 204
+
     try:
         data = request.get_json()
         page_id = data.get('page_id')
@@ -128,7 +162,7 @@ def send_message():
 
         # Send to Facebook
         url = 'https://graph.facebook.com/v18.0/me/messages'
-        params = {'access_token': page_config['access_token']}
+        params = {'access_token': page_config['accessToken']}
         headers = {'Content-Type': 'application/json'}
         payload = {
             'recipient': {'id': recipient_id},
