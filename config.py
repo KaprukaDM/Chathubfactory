@@ -14,13 +14,9 @@ WEBHOOK_VERIFY_TOKEN = os.getenv('WEBHOOK_VERIFY_TOKEN', 'your-webhook-token')
 
 # Page configurations - IMPORTANT: Each page MUST have an accessToken
 PAGES_CONFIG = {
-    '123456789': {  # Replace with your Facebook Page ID
-        'name': 'Your Page Name',
-        'accessToken': 'YOUR_PAGE_ACCESS_TOKEN'  # REQUIRED - Get from Facebook Developer Console
-    },
-    '987654321': {  # Add more pages as needed
-        'name': 'Another Page',
-        'accessToken': 'ANOTHER_PAGE_ACCESS_TOKEN'
+    '109408748617460': {  # Your Facebook Page ID
+        'name': 'Kapruka',
+        'accessToken': 'YOUR_PAGE_ACCESS_TOKEN'  # TODO: Replace with your actual Page Access Token
     }
 }
 
