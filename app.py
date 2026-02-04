@@ -80,7 +80,7 @@ def handle_message(event, page_id):
             message_id = event['message']['mid']
 
             # Get sender name from Facebook API
-            sender_name = get_sender_name(sender_id, page_config['accessToken'])
+            sender_name = get_sender_name(sender_id, page_config.get('accessToken'))
 
             # Create conversation ID
             conversation_id = f"fb_{page_id}_{sender_id}"
@@ -94,7 +94,7 @@ def handle_message(event, page_id):
                     'conversation_id': conversation_id,
                     'platform': 'facebook',
                     'page_id': page_id,
-                    'page_name': page_config['name'],
+                    'page_name': page_config.get('name', 'Unknown Page'),
                     'customer_psid': sender_id,
                     'customer_name': sender_name,
                     'last_message_time': datetime.now().isoformat(),
@@ -127,15 +127,20 @@ def handle_message(event, page_id):
 def get_sender_name(sender_id, access_token):
     """Fetch sender name from Facebook Graph API"""
     try:
+        if not access_token:
+            print('Warning: access_token is missing')
+            return 'Unknown'
+            
         url = f'https://graph.facebook.com/v18.0/{sender_id}'
         params = {
             'fields': 'name',
             'access_token': access_token
         }
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=5)
         data = response.json()
         return data.get('name', 'Unknown')
-    except:
+    except Exception as e:
+        print(f'Error fetching sender name: {str(e)}')
         return 'Unknown'
 
 # Send message API
@@ -160,9 +165,15 @@ def send_message():
         if not page_config:
             return jsonify({'error': f'Page {page_id} not configured'}), 400
 
+        # Check if accessToken exists
+        access_token = page_config.get('accessToken')
+        if not access_token:
+            print(f'Error: accessToken missing for page {page_id}')
+            return jsonify({'error': 'Page access token not configured. Check your config.py file.'}), 400
+
         # Send to Facebook
         url = 'https://graph.facebook.com/v18.0/me/messages'
-        params = {'access_token': page_config['accessToken']}
+        params = {'access_token': access_token}
         headers = {'Content-Type': 'application/json'}
         payload = {
             'recipient': {'id': recipient_id},
@@ -170,7 +181,7 @@ def send_message():
             'messaging_type': 'RESPONSE'
         }
 
-        response = requests.post(url, params=params, headers=headers, json=payload)
+        response = requests.post(url, params=params, headers=headers, json=payload, timeout=10)
         response_data = response.json()
 
         if response.status_code == 200:
@@ -188,9 +199,12 @@ def send_message():
 
             return jsonify({'success': True, 'data': response_data}), 200
         else:
-            return jsonify({'error': response_data}), response.status_code
+            error_msg = response_data.get('error', {}).get('message', 'Unknown Facebook error')
+            print(f'Facebook API Error: {error_msg}')
+            return jsonify({'error': f'Facebook error: {error_msg}'}), response.status_code
 
     except Exception as e:
+        print(f'Error in send_message: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
 # Get conversation messages
