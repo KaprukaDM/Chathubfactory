@@ -15,8 +15,8 @@ WEBHOOK_VERIFY_TOKEN = os.getenv('WEBHOOK_VERIFY_TOKEN', 'your-webhook-token')
 # Page configurations - IMPORTANT: Each page MUST have an accessToken
 PAGES_CONFIG = {
     '109408748617460': {  # Your Facebook Page ID
-        'name': 'Kapruka',
-        'accessToken': 'YOUR_PAGE_ACCESS_TOKEN'  # TODO: Replace with your actual Page Access Token
+        'name': 'Social Mart - Sri Lanka',
+        'accessToken': 'EAAdarVZBfyZCgBP66f09Cls0B6ZBx5YTk34UFKCSfFWunDFIo7cxgWAgSAZBKA9ovZCqDfnD7ECMtFGkTgVWMcQNJA70iEUTmZC3oZB8VHFCxWBZBkeL7IZCkBL3DLQuNZAbkUwXHRlZCFq0cUjNMrZAZCgD3E3f1ZCSttMy5MHx9jFqIOW9tbA8nu5WpQOZCLwtPJmXW51EgGKqhIbkiKNYfmx184ZD'  # TODO: Replace with your actual Page Access Token
     }
 }
 
