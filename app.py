@@ -131,13 +131,19 @@ def get_sender_name(sender_id, access_token):
             print('Warning: access_token is missing')
             return 'Unknown'
             
-        url = f'https://graph.facebook.com/v18.0/{sender_id}'
+        url = f'https://graph.facebook.com/v19.0/{sender_id}'
         params = {
             'fields': 'name',
             'access_token': access_token
         }
         response = requests.get(url, params=params, timeout=5)
         data = response.json()
+        
+        # Check for Facebook API errors
+        if 'error' in data:
+            print(f'Facebook API Error getting sender name: {data["error"]}')
+            return 'Unknown'
+        
         return data.get('name', 'Unknown')
     except Exception as e:
         print(f'Error fetching sender name: {str(e)}')
@@ -169,10 +175,10 @@ def send_message():
         access_token = page_config.get('accessToken')
         if not access_token:
             print(f'Error: accessToken missing for page {page_id}')
-            return jsonify({'error': 'Page access token not configured. Check your config.py file.'}), 400
+            return jsonify({'error': 'Page access token not configured. Check your .env file.'}), 400
 
         # Send to Facebook
-        url = 'https://graph.facebook.com/v18.0/me/messages'
+        url = 'https://graph.facebook.com/v19.0/me/messages'
         params = {'access_token': access_token}
         headers = {'Content-Type': 'application/json'}
         payload = {
@@ -200,7 +206,8 @@ def send_message():
             return jsonify({'success': True, 'data': response_data}), 200
         else:
             error_msg = response_data.get('error', {}).get('message', 'Unknown Facebook error')
-            print(f'Facebook API Error: {error_msg}')
+            error_code = response_data.get('error', {}).get('code', 'N/A')
+            print(f'Facebook API Error: [{error_code}] {error_msg}')
             return jsonify({'error': f'Facebook error: {error_msg}'}), response.status_code
 
     except Exception as e:
@@ -228,5 +235,9 @@ def get_conversations():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
+    # Validate all tokens before starting server
+    from config import validate_all_tokens
+    validate_all_tokens()
+    
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
