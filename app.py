@@ -10,9 +10,17 @@ app = Flask(__name__)
 # Enable CORS for GitHub Pages
 CORS(app, resources={
     r"/api/*": {
-        "origins": ["https://kaprukadm.github.io", "http://localhost:*"],
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"]
+        "origins": [
+            "https://kaprukadm.github.io",
+            "http://localhost:3000",
+            "http://localhost:5000",
+            "http://127.0.0.1:5000"
+        ],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "expose_headers": ["Content-Type"],
+        "supports_credentials": False,
+        "max_age": 3600
     }
 })
 
