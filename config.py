@@ -16,7 +16,7 @@ WEBHOOK_VERIFY_TOKEN = os.getenv('WEBHOOK_VERIFY_TOKEN', 'your-webhook-token')
 # PAGE CONFIGURATIONS - EDIT THIS SECTION
 # ============================================
 # Your Facebook Page ID: 109408748617460
-# Page Name: Kapruka
+# Page Name: Social Mart - Sri Lanka
 # 
 # INSTRUCTIONS:
 # 1. Get your Page Access Token from Facebook Developers
@@ -28,7 +28,7 @@ WEBHOOK_VERIFY_TOKEN = os.getenv('WEBHOOK_VERIFY_TOKEN', 'your-webhook-token')
 PAGES_CONFIG = {
     '109408748617460': {
         'name': 'Social Mart - Sri Lanka',
-        'accessToken': 'EAAJZAZCHsJ0BAEwZC39bwf47ZB0OXZB3kBY2nZBZBkHZB3F8yC9ZCXw3Nc2qZCZCx2ZBOmNOa0N5kSZBNf6yZB0nEXK3t0ZBQx9A8ZBCQDw5t8V3p4VF2mZCJN5B6lQ0N6T0N8W0N7X0N8Y0N9Z0OxZBSZCUZCVZCW'  # REPLACE WITH YOUR ACTUAL TOKEN
+        'accessToken': 'EAAdarVZBfyZCgBP66f09Cls0B6ZBx5YTk34UFKCSfFWunDFIo7cxgWAgSAZBKA9ovZCqDfnD7ECMtFGkTgVWMcQNJA70iEUTmZC3oZB8VHFCxWBZBkeL7IZCkBL3DLQuNZAbkUwXHRlZCFq0cUjNMrZAZCgD3E3f1ZCSttMy5MHx9jFqIOW9tbA8nu5WpQOZCLwtPJmXW51EgGKqhIbkiKNYfmx184ZD'  # REPLACE WITH YOUR ACTUAL TOKEN
     }
 }
 
@@ -51,7 +51,8 @@ def get_page_config(page_id):
     
     # Validate that accessToken exists and is not a placeholder
     access_token = config.get('accessToken')
-    if not access_token or access_token.startswith('YOUR_') or access_token.startswith('EAAJZAZCHsJ0BA'):
+    # FIXED: Only check for placeholders and minimum length (removed EAAJZAZCHsJ0BA check)
+    if not access_token or access_token.startswith('YOUR_') or len(access_token) < 50:
         print(f'ERROR: Page {page_id} ({config.get("name")}) has invalid or missing accessToken!')
         print('Please update the accessToken in PAGES_CONFIG')
         return None
