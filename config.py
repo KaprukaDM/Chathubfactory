@@ -13,24 +13,43 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 WEBHOOK_VERIFY_TOKEN = os.getenv('WEBHOOK_VERIFY_TOKEN', 'your-webhook-token')
 
 # ============================================
-# PAGE CONFIGURATIONS - EDIT THIS SECTION
+# PAGE CONFIGURATIONS - Load from .env
 # ============================================
-# Your Facebook Page ID: 109408748617460
-# Page Name: Social Mart - Sri Lanka
-# 
-# INSTRUCTIONS:
-# 1. Get your Page Access Token from Facebook Developers
-# 2. Replace 'YOUR_PAGE_ACCESS_TOKEN' with the actual token
-# 3. Do NOT include quotes inside the token
-# 4. Keep the entire token (it's very long)
+# Dynamically loads pages from environment variables
+# Pattern: FB_PAGE_1_*, FB_PAGE_2_*, etc.
 # ============================================
 
-PAGES_CONFIG = {
-    '109408748617460': {
-        'name': 'Social Mart - Sri Lanka',
-        'accessToken': 'EAAdarVZBfyZCgBP66f09Cls0B6ZBx5YTk34UFKCSfFWunDFIo7cxgWAgSAZBKA9ovZCqDfnD7ECMtFGkTgVWMcQNJA70iEUTmZC3oZB8VHFCxWBZBkeL7IZCkBL3DLQuNZAbkUwXHRlZCFq0cUjNMrZAZCgD3E3f1ZCSttMy5MHx9jFqIOW9tbA8nu5WpQOZCLwtPJmXW51EgGKqhIbkiKNYfmx184ZD'  # REPLACE WITH YOUR ACTUAL TOKEN
-    }
-}
+PAGES_CONFIG = {}
+
+# Load all pages from environment variables
+page_index = 1
+while True:
+    page_id = os.getenv(f'FB_PAGE_{page_index}_ID')
+    
+    # Stop when no more pages found
+    if not page_id:
+        break
+    
+    page_name = os.getenv(f'FB_PAGE_{page_index}_NAME', f'Page {page_index}')
+    page_token = os.getenv(f'FB_PAGE_{page_index}_ACCESS_TOKEN')
+    
+    # Only add if token exists and is not a placeholder
+    if page_token and not page_token.startswith('YOUR_'):
+        PAGES_CONFIG[page_id] = {
+            'name': page_name,
+            'accessToken': page_token
+        }
+        print(f'✓ Loaded page: {page_name} (ID: {page_id})')
+    else:
+        print(f'⚠ Skipped page {page_id}: Invalid or missing token')
+    
+    page_index += 1
+
+# Print loaded configuration
+if PAGES_CONFIG:
+    print(f'\n✓ Total pages loaded: {len(PAGES_CONFIG)}')
+else:
+    print('\n⚠ WARNING: No pages configured! Please check your .env file')
 
 def get_page_config(page_id):
     """
@@ -51,10 +70,9 @@ def get_page_config(page_id):
     
     # Validate that accessToken exists and is not a placeholder
     access_token = config.get('accessToken')
-    # FIXED: Only check for placeholders and minimum length (removed EAAJZAZCHsJ0BA check)
     if not access_token or access_token.startswith('YOUR_') or len(access_token) < 50:
         print(f'ERROR: Page {page_id} ({config.get("name")}) has invalid or missing accessToken!')
-        print('Please update the accessToken in PAGES_CONFIG')
+        print('Please update the accessToken in your .env file')
         return None
     
     return config
