@@ -234,10 +234,14 @@ def get_conversations():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# ============================================
+# VALIDATE TOKENS ON STARTUP (Issue #4 Fix)
+# ============================================
+# This runs when Gunicorn imports the app
+from config import validate_all_tokens
+validate_all_tokens()
+
 if __name__ == '__main__':
-    # Validate all tokens before starting server
-    from config import validate_all_tokens
-    validate_all_tokens()
-    
+    # For local development with Flask dev server
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
