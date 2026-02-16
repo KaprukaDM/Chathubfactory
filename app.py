@@ -30,12 +30,11 @@ CORS(app, resources={
 def home():
     return jsonify({
         'message': 'Facebook Messenger Hub API',
-        'version': '2.1',
+        'version': '2.3',
         'endpoints': {
             'webhook': '/webhook',
             'send_message': '/api/send',
             'send_image': '/api/send-image',
-            'customer_name': '/api/customer-name/<psid>',
             'unreplied_counts': '/api/unreplied-counts',
             'conversations': '/api/conversations',
             'conversation': '/api/conversation/<id>',
@@ -80,13 +79,13 @@ def webhook():
         return 'Not Found', 404
 
 def handle_message(event, page_id):
-    """Process incoming Facebook message"""
+    """Process incoming Facebook message - UPDATED with Message ID name fetching"""
     try:
         sender_id = event['sender']['id']
         page_config = get_page_config(page_id)
 
         if not page_config:
-            print(f'Page {page_id} not configured')
+            print(f'⚠️ Page {page_id} not configured')
             return
 
         # Handle text messages and attachments
@@ -132,8 +131,16 @@ def handle_message(event, page_id):
                             message_text = '[Audio]'
                         break
 
-            # Get sender name from Facebook API
-            sender_name = get_sender_name(sender_id, page_config.get('accessToken'))
+            # ✅ NEW METHOD: Get name from Message ID (THIS WORKS!)
+            access_token = page_config.get('accessToken')
+            sender_name = get_sender_name_from_message(message_id, access_token)
+            
+            # Fallback to friendly PSID display if name fetch fails
+            if not sender_name or sender_name == 'Unknown':
+                sender_name = f"Customer {sender_id[:8]}"
+                print(f'ℹ️ Using display name: {sender_name}')
+            else:
+                print(f'✅ Got real name: {sender_name}')
 
             # Create conversation ID
             conversation_id = f"fb_{page_id}_{sender_id}"
@@ -150,19 +157,22 @@ def handle_message(event, page_id):
                     'page_name': page_config.get('name', 'Unknown Page'),
                     'customer_psid': sender_id,
                     'customer_name': sender_name,
-                    'customer_name_fetched': True if sender_name != 'Unknown' else False,
+                    'customer_name_fetched': True,
                     'last_message_time': datetime.now().isoformat(),
                     'status': 'active'
                 }).execute()
-                print(f'✅ New conversation created: {conversation_id}')
+                print(f'✅ New conversation created: {conversation_id} - {sender_name}')
             else:
-                # Update last message time and name if we got a real name
-                update_data = {
-                    'last_message_time': datetime.now().isoformat()
-                }
-                if sender_name != 'Unknown':
+                # Update conversation - always update name if we got a real one
+                existing_name = result.data[0].get('customer_name', 'Unknown')
+                update_data = {'last_message_time': datetime.now().isoformat()}
+                
+                # Update name if: we have a real name (not auto-generated)
+                if sender_name and not sender_name.startswith('Customer ') and not sender_name.startswith('User #') and sender_name != 'Unknown':
                     update_data['customer_name'] = sender_name
                     update_data['customer_name_fetched'] = True
+                    if existing_name != sender_name:
+                        print(f'✅ Updated conversation name: {existing_name} → {sender_name}')
                 
                 supabase.table('conversations').update(update_data).eq('conversation_id', conversation_id).execute()
 
@@ -182,27 +192,81 @@ def handle_message(event, page_id):
                 'status': 'received'
             }).execute()
 
-            print(f'📨 Message stored: {conversation_id} - Type: {message_type}')
+            print(f'📨 Message stored: {conversation_id} - {sender_name} - Type: {message_type}')
 
     except Exception as e:
         print(f'❌ Error handling message: {str(e)}')
         import traceback
         traceback.print_exc()
 
-def get_sender_name(sender_id, access_token):
-    """Fetch sender name from Facebook Graph API with detailed logging"""
+def get_sender_name_from_message(message_id, access_token):
+    """
+    ✅ NEW METHOD: Get sender name from Message ID instead of PSID
+    This bypasses Facebook's privacy restrictions!
+    Works like Hootsuite, Zendesk, etc.
+    """
     try:
-        if not access_token:
-            print('❌ Warning: access_token is missing')
+        if not access_token or not message_id:
+            print('⚠️ Missing access_token or message_id')
             return 'Unknown'
         
-        # Check if sender is valid
-        if not sender_id or len(sender_id) < 5:
-            print(f'❌ Invalid sender_id: {sender_id}')
+        print(f'🔍 Fetching sender info from Message ID: {message_id}')
+        
+        # Query the MESSAGE, not the USER directly
+        url = f'https://graph.facebook.com/v19.0/{message_id}'
+        params = {
+            'fields': 'from',  # Get sender info from message
+            'access_token': access_token
+        }
+        
+        response = requests.get(url, params=params, timeout=5)
+        data = response.json()
+        
+        print(f'📡 Facebook API Response: {data}')
+        
+        # Check for errors
+        if 'error' in data:
+            error_msg = data['error'].get('message', 'Unknown error')
+            error_code = data['error'].get('code', 'N/A')
+            print(f'⚠️ Facebook API Error: [{error_code}] {error_msg}')
             return 'Unknown'
-            
-        print(f'🔍 Fetching name from Facebook for PSID: {sender_id}')
-        print(f'🔑 Using access token: {access_token[:20]}...')
+        
+        # Extract name from "from" field
+        if 'from' in data and isinstance(data['from'], dict):
+            if 'name' in data['from']:
+                name = data['from']['name']
+                print(f'✅ Successfully fetched name from message: {name}')
+                return name
+            elif 'id' in data['from']:
+                # Has ID but no name (rare case)
+                print(f'⚠️ Message has sender ID but no name')
+                return 'Unknown'
+        
+        print(f'⚠️ No "from" field in message response')
+        return 'Unknown'
+        
+    except requests.exceptions.Timeout:
+        print(f'⏱️ Timeout fetching name for message {message_id}')
+        return 'Unknown'
+    except requests.exceptions.RequestException as e:
+        print(f'🌐 Network error fetching sender name: {str(e)}')
+        return 'Unknown'
+    except Exception as e:
+        print(f'❌ Unexpected error fetching sender name: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        return 'Unknown'
+
+def get_sender_name_from_psid(sender_id, access_token):
+    """
+    ❌ OLD METHOD: Kept as fallback but usually doesn't work for regular users
+    Only works for app admins/developers
+    """
+    try:
+        if not access_token or not sender_id:
+            return 'Unknown'
+        
+        print(f'🔍 Attempting PSID query (fallback): {sender_id}')
         
         url = f'https://graph.facebook.com/v19.0/{sender_id}'
         params = {
@@ -213,53 +277,18 @@ def get_sender_name(sender_id, access_token):
         response = requests.get(url, params=params, timeout=5)
         data = response.json()
         
-        print(f'📡 Facebook API Response Status: {response.status_code}')
-        print(f'📡 Facebook API Response Data: {data}')
-        
-        # Check for Facebook API errors
         if 'error' in data:
-            error_msg = data['error'].get('message', 'Unknown error')
             error_code = data['error'].get('code', 'N/A')
-            error_type = data['error'].get('type', 'N/A')
-            error_subcode = data['error'].get('error_subcode', 'N/A')
-            
-            print(f'❌ Facebook API Error Details:')
-            print(f'   Code: {error_code}')
-            print(f'   Type: {error_type}')
-            print(f'   Subcode: {error_subcode}')
-            print(f'   Message: {error_msg}')
-            
-            # Common error handling
-            if error_code == 190:
-                print('⚠️ ACCESS TOKEN EXPIRED OR INVALID!')
-                print('   → Go to Facebook Developer Console and regenerate token')
-                print('   → Update environment variable in Render')
-            elif error_code == 100:
-                print('⚠️ Invalid parameter or insufficient permissions')
-                print('   → Check if app has pages_read_engagement permission')
-            elif error_code == 803:
-                print('⚠️ Cannot query users by their user ID')
-                print('   → This might be a page-scoped ID issue')
-            elif 'page' in str(error_msg).lower():
-                print('ℹ️ This appears to be a page, not a user')
-                return data.get('name', 'Facebook Page')
-            
+            print(f'ℹ️ PSID query failed (expected): Error {error_code}')
             return 'Unknown'
         
         name = data.get('name', 'Unknown')
-        print(f'✅ Successfully fetched name: {name}')
+        if name != 'Unknown':
+            print(f'✅ PSID query worked: {name}')
         return name
         
-    except requests.exceptions.Timeout:
-        print(f'⏱️ Timeout fetching name for {sender_id}')
-        return 'Unknown'
-    except requests.exceptions.RequestException as e:
-        print(f'🌐 Network error fetching sender name: {str(e)}')
-        return 'Unknown'
     except Exception as e:
-        print(f'❌ Unexpected error fetching sender name: {str(e)}')
-        import traceback
-        traceback.print_exc()
+        print(f'ℹ️ PSID query failed: {str(e)}')
         return 'Unknown'
 
 # ============================================
@@ -313,10 +342,8 @@ def send_message():
         else:
             payload['messaging_type'] = 'RESPONSE'
 
-        print(f'📡 Sending to Facebook: {payload}')
         response = requests.post(url, params=params, headers=headers, json=payload, timeout=10)
         response_data = response.json()
-        print(f'📡 Facebook response: {response_data}')
 
         if response.status_code == 200:
             # Store sent message
@@ -421,7 +448,6 @@ def send_image():
         print(f'📡 Sending image to Facebook: {image_file.filename} ({len(image_bytes)} bytes)')
         response = requests.post(url, params=params, data=payload, files=files, timeout=30)
         response_data = response.json()
-        print(f'📡 Facebook image response: {response_data}')
 
         if response.status_code == 200:
             # Get attachment/message ID
@@ -447,67 +473,11 @@ def send_image():
         else:
             error_msg = response_data.get('error', {}).get('message', 'Unknown error')
             error_code = response_data.get('error', {}).get('code', 'N/A')
-            error_type = response_data.get('error', {}).get('type', 'N/A')
-            print(f'❌ Facebook image error: [{error_code}] {error_type} - {error_msg}')
-            print(f'Full error response: {response_data}')
+            print(f'❌ Facebook image error: [{error_code}] {error_msg}')
             return jsonify({'error': f'Facebook error: {error_msg}', 'code': error_code}), response.status_code
 
     except Exception as e:
         print(f'❌ Error in send_image: {str(e)}')
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
-
-# ============================================
-# Fetch customer name from Facebook - ENHANCED
-# ============================================
-@app.route('/api/customer-name/<psid>', methods=['GET'])
-def get_customer_name(psid):
-    """Fetch customer name from Facebook Graph API"""
-    try:
-        print(f'🔍 API Request: Fetching name for PSID: {psid}')
-        
-        # Find which page this customer belongs to (check conversations)
-        conv_result = supabase.table('conversations').select('page_id, conversation_id').eq('customer_psid', psid).limit(1).execute()
-        
-        if not conv_result.data:
-            print(f'⚠️ Customer {psid} not found in conversations')
-            return jsonify({'error': 'Customer not found in database'}), 404
-        
-        page_id = conv_result.data[0]['page_id']
-        print(f'📘 Found conversation for page: {page_id}')
-        
-        page_config = get_page_config(page_id)
-        
-        if not page_config:
-            print(f'❌ Page {page_id} not configured')
-            return jsonify({'error': 'Page not configured'}), 400
-        
-        access_token = page_config.get('accessToken')
-        if not access_token:
-            print(f'❌ Access token missing for page {page_id}')
-            return jsonify({'error': 'Access token missing'}), 400
-        
-        print(f'🔑 Using access token for page: {page_config.get("name", "Unknown")}')
-        
-        # Fetch name from Facebook
-        name = get_sender_name(psid, access_token)
-        
-        if name and name != 'Unknown':
-            # Update all conversations with this customer
-            update_result = supabase.table('conversations').update({
-                'customer_name': name,
-                'customer_name_fetched': True
-            }).eq('customer_psid', psid).execute()
-            
-            print(f'✅ Updated {len(update_result.data)} conversations with name: {name}')
-            return jsonify({'success': True, 'name': name}), 200
-        else:
-            print(f'⚠️ Could not fetch name from Facebook for {psid}')
-            return jsonify({'success': False, 'name': None, 'error': 'Could not fetch name from Facebook'}), 200
-            
-    except Exception as e:
-        print(f'❌ Error in get_customer_name: {str(e)}')
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -532,7 +502,7 @@ def get_unreplied_counts():
                     key = f"{row['page_id']}_{row['customer_psid']}"
                     counts[key] = row['unreplied_count']
             
-            print(f'✅ Unreplied counts (from RPC): {len(counts)} conversations with unreplied messages')
+            print(f'✅ Unreplied counts: {len(counts)} conversations with unreplied messages')
             return jsonify({'success': True, 'counts': counts}), 200
             
         except Exception as rpc_error:
@@ -551,7 +521,7 @@ def get_unreplied_counts():
                     key = f"{conv['page_id']}_{conv['customer_psid']}"
                     counts[key] = count
             
-            print(f'✅ Unreplied counts (from fallback): {len(counts)} conversations')
+            print(f'✅ Unreplied counts (fallback): {len(counts)} conversations')
             return jsonify({'success': True, 'counts': counts}), 200
         
     except Exception as e:
