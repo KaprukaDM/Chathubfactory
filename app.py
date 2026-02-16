@@ -4,6 +4,7 @@ import requests
 from datetime import datetime
 import os
 import json
+import time
 from config import supabase, WEBHOOK_VERIFY_TOKEN, get_page_config
 
 app = Flask(__name__)
@@ -30,7 +31,7 @@ CORS(app, resources={
 def home():
     return jsonify({
         'message': 'Facebook Messenger Hub API',
-        'version': '2.3',
+        'version': '2.4',
         'endpoints': {
             'webhook': '/webhook',
             'send_message': '/api/send',
@@ -38,6 +39,7 @@ def home():
             'unreplied_counts': '/api/unreplied-counts',
             'conversations': '/api/conversations',
             'conversation': '/api/conversation/<id>',
+            'backfill_names': '/api/backfill-names',
             'health': '/health'
         }
     })
@@ -255,40 +257,6 @@ def get_sender_name_from_message(message_id, access_token):
         print(f'❌ Unexpected error fetching sender name: {str(e)}')
         import traceback
         traceback.print_exc()
-        return 'Unknown'
-
-def get_sender_name_from_psid(sender_id, access_token):
-    """
-    ❌ OLD METHOD: Kept as fallback but usually doesn't work for regular users
-    Only works for app admins/developers
-    """
-    try:
-        if not access_token or not sender_id:
-            return 'Unknown'
-        
-        print(f'🔍 Attempting PSID query (fallback): {sender_id}')
-        
-        url = f'https://graph.facebook.com/v19.0/{sender_id}'
-        params = {
-            'fields': 'name',
-            'access_token': access_token
-        }
-        
-        response = requests.get(url, params=params, timeout=5)
-        data = response.json()
-        
-        if 'error' in data:
-            error_code = data['error'].get('code', 'N/A')
-            print(f'ℹ️ PSID query failed (expected): Error {error_code}')
-            return 'Unknown'
-        
-        name = data.get('name', 'Unknown')
-        if name != 'Unknown':
-            print(f'✅ PSID query worked: {name}')
-        return name
-        
-    except Exception as e:
-        print(f'ℹ️ PSID query failed: {str(e)}')
         return 'Unknown'
 
 # ============================================
@@ -551,6 +519,106 @@ def get_conversations():
     except Exception as e:
         print(f'❌ Error in get_conversations: {str(e)}')
         return jsonify({'error': str(e)}), 500
+
+# ============================================
+# BACKFILL CUSTOMER NAMES (One-time script)
+# ============================================
+@app.route('/api/backfill-names', methods=['POST', 'OPTIONS'])
+def backfill_customer_names():
+    """
+    One-time script to fetch real names for existing conversations
+    Queries the FIRST message from each conversation to get sender name
+    """
+    
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        return '', 204
+    
+    try:
+        print('🔄 Starting customer name backfill...')
+        
+        # Get all conversations that need names updated
+        result = supabase.table('conversations').select('*').eq('status', 'active').execute()
+        conversations = result.data or []
+        
+        print(f'📊 Found {len(conversations)} conversations to check')
+        
+        updated_count = 0
+        failed_count = 0
+        skipped_count = 0
+        
+        for conv in conversations:
+            conversation_id = conv.get('conversation_id')
+            customer_name = conv.get('customer_name', '')
+            page_id = conv.get('page_id')
+            
+            # Skip if already has a real name (not auto-generated)
+            if customer_name and not customer_name.startswith('Customer ') and not customer_name.startswith('User #') and customer_name != 'Unknown':
+                print(f'⏭️ Skipping {conversation_id} - already has name: {customer_name}')
+                skipped_count += 1
+                continue
+            
+            # Get the FIRST customer message from this conversation
+            messages_result = supabase.table('messages').select('*').eq('conversation_id', conversation_id).eq('sender_type', 'customer').order('created_at').limit(1).execute()
+            
+            if not messages_result.data or len(messages_result.data) == 0:
+                print(f'⚠️ No customer messages found for {conversation_id}')
+                failed_count += 1
+                continue
+            
+            first_message = messages_result.data[0]
+            message_id = first_message.get('message_id')
+            
+            if not message_id:
+                print(f'⚠️ No message_id for {conversation_id}')
+                failed_count += 1
+                continue
+            
+            # Get page config for access token
+            page_config = get_page_config(page_id)
+            if not page_config:
+                print(f'⚠️ Page {page_id} not configured')
+                failed_count += 1
+                continue
+            
+            access_token = page_config.get('accessToken')
+            
+            # Fetch name using Message ID method
+            real_name = get_sender_name_from_message(message_id, access_token)
+            
+            if real_name and real_name != 'Unknown' and not real_name.startswith('Customer '):
+                # Update conversation with real name
+                supabase.table('conversations').update({
+                    'customer_name': real_name,
+                    'customer_name_fetched': True
+                }).eq('conversation_id', conversation_id).execute()
+                
+                print(f'✅ Updated {conversation_id}: {customer_name} → {real_name}')
+                updated_count += 1
+            else:
+                print(f'❌ Could not fetch name for {conversation_id} (message_id: {message_id})')
+                failed_count += 1
+            
+            # Small delay to avoid rate limiting
+            time.sleep(0.5)
+        
+        summary = {
+            'total_checked': len(conversations),
+            'updated': updated_count,
+            'failed': failed_count,
+            'skipped': skipped_count,
+            'success': True
+        }
+        
+        print(f'✨ Backfill complete: {updated_count} updated, {failed_count} failed, {skipped_count} skipped')
+        
+        return jsonify(summary), 200
+        
+    except Exception as e:
+        print(f'❌ Error in backfill_customer_names: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
 
 # ============================================
 # VALIDATE TOKENS ON STARTUP
