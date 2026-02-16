@@ -3,6 +3,7 @@ from flask_cors import CORS
 import requests
 from datetime import datetime
 import os
+import json
 from config import supabase, WEBHOOK_VERIFY_TOKEN, get_page_config
 
 app = Flask(__name__)
@@ -29,12 +30,15 @@ CORS(app, resources={
 def home():
     return jsonify({
         'message': 'Facebook Messenger Hub API',
+        'version': '2.0',
         'endpoints': {
             'webhook': '/webhook',
             'send_message': '/api/send',
             'send_image': '/api/send-image',
             'customer_name': '/api/customer-name/<psid>',
             'unreplied_counts': '/api/unreplied-counts',
+            'conversations': '/api/conversations',
+            'conversation': '/api/conversation/<id>',
             'health': '/health'
         }
     })
@@ -85,21 +89,47 @@ def handle_message(event, page_id):
             print(f'Page {page_id} not configured')
             return
 
-        # Handle text messages
+        # Handle text messages and attachments
         if event.get('message'):
             message_id = event['message']['mid']
             message_text = event['message'].get('text', '')
             
-            # Check for attachments (images, etc.)
+            # Check for attachments (images, videos, files, etc.)
             attachments = event['message'].get('attachments', [])
             message_type = 'text'
             image_url = None
+            attachment_type = None
             
             if attachments:
                 for attachment in attachments:
-                    if attachment.get('type') == 'image':
+                    att_type = attachment.get('type')
+                    if att_type == 'image':
                         message_type = 'image'
+                        attachment_type = 'image'
                         image_url = attachment.get('payload', {}).get('url')
+                        if not message_text:
+                            message_text = '[Image]'
+                        break
+                    elif att_type == 'video':
+                        message_type = 'video'
+                        attachment_type = 'video'
+                        image_url = attachment.get('payload', {}).get('url')
+                        if not message_text:
+                            message_text = '[Video]'
+                        break
+                    elif att_type == 'file':
+                        message_type = 'file'
+                        attachment_type = 'file'
+                        image_url = attachment.get('payload', {}).get('url')
+                        if not message_text:
+                            message_text = '[File]'
+                        break
+                    elif att_type == 'audio':
+                        message_type = 'audio'
+                        attachment_type = 'audio'
+                        image_url = attachment.get('payload', {}).get('url')
+                        if not message_text:
+                            message_text = '[Audio]'
                         break
 
             # Get sender name from Facebook API
@@ -120,17 +150,21 @@ def handle_message(event, page_id):
                     'page_name': page_config.get('name', 'Unknown Page'),
                     'customer_psid': sender_id,
                     'customer_name': sender_name,
-                    'customer_name_fetched': True,
+                    'customer_name_fetched': True if sender_name != 'Unknown' else False,
                     'last_message_time': datetime.now().isoformat(),
                     'status': 'active'
                 }).execute()
+                print(f'New conversation created: {conversation_id}')
             else:
-                # Update last message time and name
-                supabase.table('conversations').update({
-                    'last_message_time': datetime.now().isoformat(),
-                    'customer_name': sender_name,
-                    'customer_name_fetched': True
-                }).eq('conversation_id', conversation_id).execute()
+                # Update last message time and name if we got a real name
+                update_data = {
+                    'last_message_time': datetime.now().isoformat()
+                }
+                if sender_name != 'Unknown':
+                    update_data['customer_name'] = sender_name
+                    update_data['customer_name_fetched'] = True
+                
+                supabase.table('conversations').update(update_data).eq('conversation_id', conversation_id).execute()
 
             # Store message
             supabase.table('messages').insert({
@@ -142,15 +176,18 @@ def handle_message(event, page_id):
                 'message_text': message_text,
                 'message_type': message_type,
                 'image_url': image_url,
+                'attachment_type': attachment_type,
                 'replied': False,
                 'created_at': datetime.now().isoformat(),
                 'status': 'received'
             }).execute()
 
-            print(f'Message stored: {conversation_id} - Type: {message_type}')
+            print(f'Message stored: {conversation_id} - Type: {message_type} - Text: {message_text[:50]}')
 
     except Exception as e:
         print(f'Error handling message: {str(e)}')
+        import traceback
+        traceback.print_exc()
 
 def get_sender_name(sender_id, access_token):
     """Fetch sender name from Facebook Graph API"""
@@ -172,13 +209,15 @@ def get_sender_name(sender_id, access_token):
             print(f'Facebook API Error getting sender name: {data["error"]}')
             return 'Unknown'
         
-        return data.get('name', 'Unknown')
+        name = data.get('name', 'Unknown')
+        print(f'Fetched name for {sender_id}: {name}')
+        return name
     except Exception as e:
         print(f'Error fetching sender name: {str(e)}')
         return 'Unknown'
 
 # ============================================
-# NEW ENDPOINT 1: Send message with HUMAN_AGENT tag support
+# Send message with HUMAN_AGENT tag support
 # ============================================
 @app.route('/api/send', methods=['POST', 'OPTIONS'])
 def send_message():
@@ -194,6 +233,8 @@ def send_message():
         recipient_id = data.get('recipient_id')
         message_text = data.get('message_text')
         use_human_agent_tag = data.get('use_human_agent_tag', False)
+
+        print(f'Send message request: page={page_id}, recipient={recipient_id}, use_tag={use_human_agent_tag}')
 
         if not all([page_id, recipient_id, message_text]):
             return jsonify({'error': 'Missing required fields'}), 400
@@ -222,11 +263,14 @@ def send_message():
         if use_human_agent_tag:
             payload['messaging_type'] = 'MESSAGE_TAG'
             payload['tag'] = 'HUMAN_AGENT'
+            print(f'Using HUMAN_AGENT tag for message to {recipient_id}')
         else:
             payload['messaging_type'] = 'RESPONSE'
 
+        print(f'Sending to Facebook: {payload}')
         response = requests.post(url, params=params, headers=headers, json=payload, timeout=10)
         response_data = response.json()
+        print(f'Facebook response: {response_data}')
 
         if response.status_code == 200:
             # Store sent message
@@ -242,19 +286,22 @@ def send_message():
                 'status': 'sent'
             }).execute()
 
+            print(f'Message sent successfully: {response_data.get("message_id")}')
             return jsonify({'success': True, 'data': response_data}), 200
         else:
             error_msg = response_data.get('error', {}).get('message', 'Unknown Facebook error')
             error_code = response_data.get('error', {}).get('code', 'N/A')
             print(f'Facebook API Error: [{error_code}] {error_msg}')
-            return jsonify({'error': f'Facebook error: {error_msg}'}), response.status_code
+            return jsonify({'error': f'Facebook error: {error_msg}', 'code': error_code}), response.status_code
 
     except Exception as e:
         print(f'Error in send_message: {str(e)}')
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# NEW ENDPOINT 2: Send image message
+# Send image message - FIXED VERSION
 # ============================================
 @app.route('/api/send-image', methods=['POST', 'OPTIONS'])
 def send_image():
@@ -268,6 +315,8 @@ def send_image():
         recipient_id = request.form.get('recipient_id')
         use_human_agent_tag = request.form.get('use_human_agent_tag', 'false').lower() == 'true'
         
+        print(f'Send image request: page={page_id}, recipient={recipient_id}, use_tag={use_human_agent_tag}')
+        
         if 'image' not in request.files:
             return jsonify({'error': 'No image file provided'}), 400
             
@@ -275,6 +324,9 @@ def send_image():
         
         if not all([page_id, recipient_id]):
             return jsonify({'error': 'Missing required fields'}), 400
+
+        if not image_file.filename:
+            return jsonify({'error': 'No file selected'}), 400
 
         page_config = get_page_config(page_id)
         if not page_config:
@@ -284,76 +336,96 @@ def send_image():
         if not access_token:
             return jsonify({'error': 'Page access token not configured'}), 400
 
-        # Send image to Facebook
+        # Send image to Facebook - CORRECTED METHOD
         url = 'https://graph.facebook.com/v19.0/me/messages'
         params = {'access_token': access_token}
         
-        # Build payload
-        payload = {
-            'recipient': {'id': recipient_id},
-            'message': {
-                'attachment': {
-                    'type': 'image',
-                    'payload': {
-                        'is_reusable': True
-                    }
+        # Build message payload as JSON strings for multipart/form-data
+        message_data = {
+            'attachment': {
+                'type': 'image',
+                'payload': {
+                    'is_reusable': True
                 }
             }
+        }
+        
+        # Prepare form data
+        payload = {
+            'recipient': json.dumps({'id': recipient_id}),
+            'message': json.dumps(message_data)
         }
         
         if use_human_agent_tag:
             payload['messaging_type'] = 'MESSAGE_TAG'
             payload['tag'] = 'HUMAN_AGENT'
+            print('Using HUMAN_AGENT tag for image')
         else:
             payload['messaging_type'] = 'RESPONSE'
 
+        # Read image file
+        image_bytes = image_file.read()
+        image_file.seek(0)  # Reset file pointer
+        
         # Prepare multipart form data
         files = {
-            'message': (None, str(payload).replace("'", '"')),
-            'filedata': (image_file.filename, image_file.read(), image_file.content_type)
+            'filedata': (image_file.filename, image_bytes, image_file.content_type or 'image/jpeg')
         }
 
-        response = requests.post(url, params=params, files=files, timeout=30)
+        print(f'Sending image to Facebook: {image_file.filename} ({len(image_bytes)} bytes)')
+        response = requests.post(url, params=params, data=payload, files=files, timeout=30)
         response_data = response.json()
+        print(f'Facebook image response: {response_data}')
 
         if response.status_code == 200:
-            # Get image URL from response
-            image_url = response_data.get('attachment_id', '')
+            # Get attachment/message ID
+            msg_id = response_data.get('message_id')
+            attachment_id = response_data.get('attachment_id', '')
             
             # Store sent message
             conversation_id = f"fb_{page_id}_{recipient_id}"
             supabase.table('messages').insert({
                 'conversation_id': conversation_id,
                 'platform': 'facebook',
-                'message_id': response_data.get('message_id'),
+                'message_id': msg_id,
                 'sender_type': 'agent',
                 'message_text': '[Image]',
                 'message_type': 'image',
-                'image_url': image_url,
+                'image_url': attachment_id,  # Store attachment ID
                 'created_at': datetime.now().isoformat(),
                 'status': 'sent'
             }).execute()
 
+            print(f'Image sent successfully: {msg_id}')
             return jsonify({'success': True, 'data': response_data}), 200
         else:
             error_msg = response_data.get('error', {}).get('message', 'Unknown error')
-            return jsonify({'error': f'Facebook error: {error_msg}'}), response.status_code
+            error_code = response_data.get('error', {}).get('code', 'N/A')
+            error_type = response_data.get('error', {}).get('type', 'N/A')
+            print(f'Facebook image error: [{error_code}] {error_type} - {error_msg}')
+            print(f'Full error response: {response_data}')
+            return jsonify({'error': f'Facebook error: {error_msg}', 'code': error_code}), response.status_code
 
     except Exception as e:
         print(f'Error in send_image: {str(e)}')
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# NEW ENDPOINT 3: Fetch customer name from Facebook
+# Fetch customer name from Facebook
 # ============================================
 @app.route('/api/customer-name/<psid>', methods=['GET'])
 def get_customer_name(psid):
     """Fetch customer name from Facebook Graph API"""
     try:
+        print(f'Fetching name for PSID: {psid}')
+        
         # Find which page this customer belongs to (check conversations)
         conv_result = supabase.table('conversations').select('page_id').eq('customer_psid', psid).limit(1).execute()
         
         if not conv_result.data:
+            print(f'Customer {psid} not found in conversations')
             return jsonify({'error': 'Customer not found'}), 404
         
         page_id = conv_result.data[0]['page_id']
@@ -371,43 +443,50 @@ def get_customer_name(psid):
         
         if name and name != 'Unknown':
             # Update all conversations with this customer
-            supabase.table('conversations').update({
+            update_result = supabase.table('conversations').update({
                 'customer_name': name,
                 'customer_name_fetched': True
             }).eq('customer_psid', psid).execute()
             
+            print(f'Updated {len(update_result.data)} conversations with name: {name}')
             return jsonify({'success': True, 'name': name}), 200
         else:
-            return jsonify({'success': False, 'name': None, 'error': 'Could not fetch name'}), 200
+            print(f'Could not fetch name for {psid}')
+            return jsonify({'success': False, 'name': None, 'error': 'Could not fetch name from Facebook'}), 200
             
     except Exception as e:
         print(f'Error in get_customer_name: {str(e)}')
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# NEW ENDPOINT 4: Get unreplied message counts
+# Get unreplied message counts
 # ============================================
 @app.route('/api/unreplied-counts', methods=['GET'])
 def get_unreplied_counts():
     """Get count of unreplied messages per page/customer"""
     try:
-        # Call the Supabase function we created
-        result = supabase.rpc('get_unreplied_counts').execute()
+        print('Fetching unreplied counts...')
         
-        # Format as dictionary: "pageId_psid": count
-        counts = {}
-        if result.data:
-            for row in result.data:
-                key = f"{row['page_id']}_{row['customer_psid']}"
-                counts[key] = row['unreplied_count']
-        
-        return jsonify({'success': True, 'counts': counts}), 200
-        
-    except Exception as e:
-        print(f'Error in get_unreplied_counts: {str(e)}')
-        # Fallback: calculate manually if RPC fails
+        # Try to call the Supabase function first
         try:
-            # Get all conversations
+            result = supabase.rpc('get_unreplied_counts').execute()
+            
+            # Format as dictionary: "pageId_psid": count
+            counts = {}
+            if result.data:
+                for row in result.data:
+                    key = f"{row['page_id']}_{row['customer_psid']}"
+                    counts[key] = row['unreplied_count']
+            
+            print(f'Unreplied counts (from RPC): {counts}')
+            return jsonify({'success': True, 'counts': counts}), 200
+            
+        except Exception as rpc_error:
+            print(f'RPC function failed, using fallback method: {str(rpc_error)}')
+            
+            # Fallback: calculate manually
             convs = supabase.table('conversations').select('conversation_id, page_id, customer_psid').execute()
             counts = {}
             
@@ -420,9 +499,14 @@ def get_unreplied_counts():
                     key = f"{conv['page_id']}_{conv['customer_psid']}"
                     counts[key] = count
             
+            print(f'Unreplied counts (from fallback): {counts}')
             return jsonify({'success': True, 'counts': counts}), 200
-        except Exception as e2:
-            return jsonify({'error': str(e2)}), 500
+        
+    except Exception as e:
+        print(f'Error in get_unreplied_counts: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 # Get conversation messages
 @app.route('/api/conversation/<conversation_id>', methods=['GET'])
@@ -432,6 +516,7 @@ def get_conversation(conversation_id):
         result = supabase.table('messages').select('*').eq('conversation_id', conversation_id).order('created_at').execute()
         return jsonify({'success': True, 'messages': result.data}), 200
     except Exception as e:
+        print(f'Error in get_conversation: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
 # Get all active conversations
@@ -442,12 +527,12 @@ def get_conversations():
         result = supabase.table('conversations').select('*').eq('status', 'active').order('last_message_time', desc=True).execute()
         return jsonify({'success': True, 'conversations': result.data}), 200
     except Exception as e:
+        print(f'Error in get_conversations: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
 # ============================================
-# VALIDATE TOKENS ON STARTUP (Issue #4 Fix)
+# VALIDATE TOKENS ON STARTUP
 # ============================================
-# This runs when Gunicorn imports the app
 from config import validate_all_tokens
 validate_all_tokens()
 
